@@ -15,3 +15,11 @@ env/
 # OS files
 .DS_Store
 Thumbs.db
+
+# Bot secrets and session data
+bot/.env
+bot/cookies.json
+
+# Tooling
+.claude/
+.firecrawl/
