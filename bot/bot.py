@@ -21,7 +21,7 @@ from telegram.ext import (
 
 # Add repo root to path so 'shared' package is importable
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from shared.scraper import check_rooms_with_cookie
+from shared.scraper import check_rooms_with_cookie, login_and_get_cookie
 
 load_dotenv(os.path.join(os.path.dirname(__file__), '.env'))
 BOT_TOKEN = os.environ['BOT_TOKEN']
@@ -29,7 +29,7 @@ BOT_TOKEN = os.environ['BOT_TOKEN']
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 
 # Conversation states
-CHOOSE_DATE, CHOOSE_START, CHOOSE_END, AWAITING_COOKIE, AWAITING_CUSTOM_DATE = range(5)
+CHOOSE_DATE, CHOOSE_START, CHOOSE_END, AWAITING_COOKIE, AWAITING_CUSTOM_DATE, AWAITING_EMAIL, AWAITING_PASSWORD = range(7)
 
 # One scrape at a time
 scrape_lock = asyncio.Lock()
@@ -173,9 +173,10 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     await update.message.reply_text(
         "👋 <b>Welcome to SIT RBS Room Checker!</b>\n\n"
         "Commands:\n"
+        "/login — Log in with your SIT credentials\n"
         "/check — Check room availability\n"
-        "/cookie — Update your session cookie\n\n"
-        "Use /check to get started.",
+        "/cookie — Manually update your session cookie\n\n"
+        "Use /login to get started.",
         parse_mode='HTML'
     )
 
@@ -269,6 +270,54 @@ async def cookie_only_received(update: Update, context: ContextTypes.DEFAULT_TYP
     return ConversationHandler.END
 
 
+async def login_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    await update.message.reply_text(
+        "🔐 <b>Login to RBS</b>\n\nEnter your SIT email address:",
+        parse_mode='HTML'
+    )
+    return AWAITING_EMAIL
+
+
+async def email_received(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    context.user_data['login_email'] = update.message.text.strip()
+    await update.message.reply_text(
+        "🔑 Enter your SIT password:\n\n<i>Your message will be deleted immediately.</i>",
+        parse_mode='HTML'
+    )
+    return AWAITING_PASSWORD
+
+
+async def password_received(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    password = update.message.text.strip()
+    email = context.user_data.get('login_email', '')
+    user_id = update.effective_user.id
+
+    try:
+        await update.message.delete()
+    except Exception:
+        pass
+
+    msg = await update.effective_chat.send_message("⏳ Logging in, please wait...")
+
+    loop = asyncio.get_event_loop()
+    try:
+        cookie_str = await loop.run_in_executor(
+            executor,
+            lambda: login_and_get_cookie(email, password)
+        )
+        _save_cookie(user_id, cookie_str)
+        await msg.edit_text("✅ Logged in successfully! Use /check to check rooms.")
+    except Exception as e:
+        err = str(e)
+        if "LOGIN_FAILED" in err:
+            await msg.edit_text("❌ Login failed. Check your email and password and try /login again.")
+        else:
+            await msg.edit_text(f"❌ Unexpected error: {err[:200]}\n\nTry /login again.")
+
+    context.user_data.pop('login_email', None)
+    return ConversationHandler.END
+
+
 async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     await update.message.reply_text("Cancelled.")
     return ConversationHandler.END
@@ -297,7 +346,17 @@ def main() -> None:
         fallbacks=[CommandHandler('cancel', cancel)],
     )
 
+    login_conv = ConversationHandler(
+        entry_points=[CommandHandler('login', login_command)],
+        states={
+            AWAITING_EMAIL: [MessageHandler(filters.TEXT & ~filters.COMMAND, email_received)],
+            AWAITING_PASSWORD: [MessageHandler(filters.TEXT & ~filters.COMMAND, password_received)],
+        },
+        fallbacks=[CommandHandler('cancel', cancel)],
+    )
+
     application.add_handler(CommandHandler('start', start_command))
+    application.add_handler(login_conv)
     application.add_handler(check_conv)
     application.add_handler(cookie_conv)
 

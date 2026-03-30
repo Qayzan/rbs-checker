@@ -172,6 +172,60 @@ def check_rooms(username, password, date, start_time, end_time, log_fn):
         return result
 
 
+def login_and_get_cookie(username, password):
+    """Log in with username/password and return the session cookie string.
+
+    Raises Exception("LOGIN_FAILED: <reason>") on bad credentials.
+    """
+    with sync_playwright() as p:
+        browser = p.chromium.launch(headless=True)
+        page = browser.new_page()
+
+        page.goto("https://rbs.singaporetech.edu.sg/SRB001/SRB001Page", timeout=20000)
+        page.wait_for_selector(
+            '#userNameInput, input[name="UserName"], input[placeholder="someone@example.com"]',
+            timeout=15000
+        )
+        page.fill('input[placeholder="someone@example.com"]', username)
+        page.fill('input[type="password"]', password)
+        page.locator('#submitButton, input[type="submit"], button[type="submit"]').first.click()
+
+        try:
+            page.wait_for_selector(
+                '[data-bind*="errorText"], #errorText, #usernameError, '
+                '.alert-error, [class*="error"], [id*="error"]',
+                timeout=3000
+            )
+            error_el = page.locator(
+                '[data-bind*="errorText"], #errorText, #usernameError, '
+                '.alert-error, [class*="error"], [id*="error"]'
+            ).first
+            error_text = error_el.inner_text().strip()
+            if error_text:
+                browser.close()
+                raise Exception(f"LOGIN_FAILED: {error_text}")
+            browser.close()
+            raise Exception("LOGIN_FAILED: incorrect email or password.")
+        except Exception as e:
+            if "LOGIN_FAILED" in str(e):
+                raise
+
+        page.wait_for_url("**/rbs.singaporetech.edu.sg/**", timeout=20000)
+        page.wait_for_load_state("networkidle", timeout=20000)
+
+        if 'login.microsoftonline' in page.url or 'sts.singaporetech' in page.url:
+            browser.close()
+            raise Exception("LOGIN_FAILED: incorrect email or password.")
+
+        cookies = page.context.cookies()
+        cookie_str = '; '.join(
+            f"{c['name']}={c['value']}" for c in cookies
+            if 'singaporetech.edu.sg' in c.get('domain', '')
+        )
+        browser.close()
+        return cookie_str
+
+
 def check_rooms_with_cookie(cookie_string, date, start_time, end_time, log_fn):
     """Used by the Telegram bot. Authenticates using a browser cookie string.
 
