@@ -112,9 +112,9 @@ HTML = """
     document.getElementById('start').value = '07:00';
     document.getElementById('end').value = '22:00';
 
-    // Default date to tomorrow
-    const tomorrow = new Date(); tomorrow.setDate(tomorrow.getDate()+1);
-    document.getElementById('date').value = tomorrow.toISOString().slice(0,10);
+    // Default date to today
+    const today = new Date();
+    document.getElementById('date').value = today.toISOString().slice(0,10);
 
     // ── SSE-powered submit ──────────────────────────────────────────────────
     document.getElementById('form').addEventListener('submit', async e => {
