@@ -164,6 +164,7 @@ HTML = """
         const { session_id } = await resp.json();
 
         es = new EventSource(`/stream/${session_id}`);
+        let completed = false;
 
         es.onmessage = ev => {
           const msg = JSON.parse(ev.data);
@@ -178,7 +179,7 @@ HTML = """
             status.innerHTML = `<span class="spinner"></span> Checking rooms\u2026 ${pct}%`;
 
           } else if (msg.type === 'result') {
-            es.close();
+            completed = true;
             progressFill.style.width  = '100%';
             progressLabel.textContent = '100%';
             const d = msg.data;
@@ -186,8 +187,10 @@ HTML = """
             renderResults(d);
             playChime();
             btn.disabled = false;
+            es.close();
 
           } else if (msg.type === 'error') {
+            completed = true;
             es.close();
             status.textContent = '\u274C ' + msg.msg;
             btn.disabled = false;
@@ -196,7 +199,7 @@ HTML = """
 
         es.onerror = () => {
           es.close();
-          if (btn.disabled) {           // only if we haven't finished cleanly
+          if (!completed) {           // only if we haven't finished cleanly
             status.textContent = '\u274C Connection lost.';
             btn.disabled = false;
           }
