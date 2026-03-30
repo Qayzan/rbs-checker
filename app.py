@@ -127,6 +127,13 @@ HTML = """
       const progressLabel= document.getElementById('progressLabel');
       const logBox       = document.getElementById('logBox');
 
+      const startVal = document.getElementById('start').value;
+      const endVal   = document.getElementById('end').value;
+      if (startVal >= endVal) {
+        status.textContent = '❌ End time must be after start time.';
+        return;
+      }
+
       btn.disabled = true;
       results.innerHTML = '';
       logBox.innerHTML  = '';
@@ -278,8 +285,35 @@ def check_rooms(username, password, date, start_time, end_time, log_fn):
         page.fill('input[placeholder="someone@example.com"]', username)
         page.fill('input[type="password"]', password)
         page.locator('#submitButton, input[type="submit"], button[type="submit"]').first.click()
+
+        # Wait for either a successful redirect or a login error message
+        try:
+            page.wait_for_selector(
+                '[data-bind*="errorText"], #errorText, #usernameError, '
+                '.alert-error, [class*="error"], [id*="error"]',
+                timeout=3000
+            )
+            # If we get here, an error element appeared — wrong email or password
+            error_el = page.locator(
+                '[data-bind*="errorText"], #errorText, #usernameError, '
+                '.alert-error, [class*="error"], [id*="error"]'
+            ).first
+            error_text = error_el.inner_text().strip()
+            if error_text:
+                raise Exception(f"Login failed: {error_text}")
+            raise Exception("Login failed: incorrect email or password.")
+        except Exception as e:
+            if "Login failed" in str(e):
+                raise
+            # No error element found — proceed to wait for redirect
+
         page.wait_for_url("**/rbs.singaporetech.edu.sg/**", timeout=20000)
         page.wait_for_load_state("networkidle", timeout=20000)
+
+        # Double-check we actually landed on RBS and not still on the login page
+        if 'login.microsoftonline' in page.url or 'sts.singaporetech' in page.url:
+            raise Exception("Login failed: incorrect email or password.")
+
         log_fn('info', 'Login successful.')
         log_fn('progress', done=1, total=5)
 
