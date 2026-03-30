@@ -1,0 +1,9 @@
+@echo off
+echo Installing/updating dependencies...
+pip install flask playwright -q
+echo Installing browser...
+python -m playwright install chromium
+echo.
+echo Starting SIT RBS Checker...
+python app.py
+pause
