@@ -4,14 +4,18 @@ import playwright
 # Path to the playwright driver bundled with the Python package
 _playwright_driver = os.path.join(os.path.dirname(playwright.__file__), 'driver')
 
+# Repo root (parent of web-app/) so the 'shared' package is findable
+_root = os.path.dirname(SPECPATH)
+
 a = Analysis(
     ['app.py'],
-    pathex=[],
+    pathex=[_root],
     binaries=[],
     datas=[
         (_playwright_driver, 'playwright/driver'),
     ],
     hiddenimports=[
+        'shared.scraper',
         'playwright',
         'playwright.sync_api',
         'playwright._impl._sync_context_manager',
