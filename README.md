@@ -23,25 +23,11 @@ An alternative interface via Telegram — no install needed.
 
 ### Usage
 
-1. Send `/check` to the bot
-2. Select a date and time range using the buttons
-3. Paste your RBS session cookie when prompted (see below)
-4. Results appear in the chat
+1. Send `/login` and enter your SIT credentials — the bot handles authentication automatically
+2. Send `/check`, select a date and time range using the buttons
+3. Results appear in the chat
 
-### Getting your session cookie
-
-**Option A — Bookmarklet:**
-1. Add the bookmarklet from `bookmarklet.js` to your browser
-2. Log into RBS, click the bookmarklet → cookie is copied to clipboard
-3. Paste into the bot
-
-**Option B — DevTools (always works):**
-1. Log into RBS and press `F12`
-2. Click **Network** tab → press `F5` to reload
-3. Click any request → scroll to **Request Headers** → find `Cookie:`
-4. Copy the full value and paste into the bot
-
-Your cookie is saved locally — you only need to do this once per session.
+Your session is saved locally — you only need to `/login` again when it expires.
 
 ## Usage (Web App)
 
@@ -80,4 +66,4 @@ Output will be in `web-app/dist\rbs-checker\` — zip the folder and share it.
 
 ---
 
-> **Privacy:** your credentials are typed directly into SIT's login page via a local automated browser. They are never sent to any external server. The Telegram bot stores only your session cookie locally — never your password.
+> **Privacy:** your credentials are typed directly into SIT's login page via a local automated browser. They are never sent to any external server. The Telegram bot stores only your session cookie locally — never your password. Password messages are deleted from chat immediately after login.
