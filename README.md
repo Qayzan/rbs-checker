@@ -4,7 +4,7 @@ Check available Discussion Rooms on SIT's Resource Booking System — no install
 
 ## Download & Run (Windows)
 
-1. Go to the [Releases](../../releases/latest) page
+1. Go to the [Releases](https://github.com/Qayzan/rbs-checker/releases/latest) page
 2. Download `rbs-checker.zip`
 3. Unzip and double-click `rbs-checker.exe`
 4. Your browser will open automatically at http://localhost:5000
@@ -17,35 +17,35 @@ Check available Discussion Rooms on SIT's Resource Booking System — no install
 2. Pick a date and time range
 3. Click **Check Availability**
 4. Results show:
-   - ✅ Rooms fully available for the whole window
-   - 🟡 Rooms partially available (with individual slot breakdown)
-   - ❌ Rooms fully booked
+   - ✅ Fully available — free for the entire time window
+   - 🟡 Partially available — some slots free, some taken
+   - ❌ Fully booked
 
 ## Account format
-- Students: `STUDENTID@sit.singaporetech.edu.sg`
-- Staff: `username@singaporetech.edu.sg`
+
+| Account type | Format |
+|---|---|
+| Student | `STUDENTID@sit.singaporetech.edu.sg` |
+| Staff | `username@singaporetech.edu.sg` |
 
 ## Run from source
 
-1. Install Python from https://python.org
-2. Install dependencies:
-   ```
-   pip install flask playwright
-   playwright install chromium
-   ```
-3. Run:
-   ```
-   python app.py
-   ```
+Requires Python 3.10+.
+
+```bash
+pip install -r requirements.txt
+playwright install chromium
+python app.py
+```
 
 ## Build the exe yourself
 
-```
+```bash
 build.bat
 ```
 
-Output will be in `dist\rbs-checker\` — zip and share.
+Output will be in `dist\rbs-checker\` — zip the folder and share it.
 
 ---
 
-> Your credentials are entered directly into SIT's login page via an automated browser running locally on your machine. They are never sent to any external server.
+> **Privacy:** your credentials are typed directly into SIT's login page via a local automated browser. They are never sent to any external server.
