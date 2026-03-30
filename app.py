@@ -61,7 +61,7 @@ HTML = """
 
     <form id="form">
       <label>SIT Username</label>
-      <input type="text" id="username" placeholder="e.g. 2403386@sit.singaporetech.edu.sg" required />
+      <input type="text" id="username" placeholder="e.g. 1234567@sit.singaporetech.edu.sg" required />
       <div class="hint">Students: ID@sit.singaporetech.edu.sg &nbsp;|&nbsp; Staff: username@singaporetech.edu.sg</div>
 
       <label>Password</label>
@@ -109,8 +109,8 @@ HTML = """
       const sel = document.getElementById(id);
       times.forEach(t => { const o = document.createElement('option'); o.value = t; o.text = t; sel.appendChild(o); });
     });
-    document.getElementById('start').value = '12:00';
-    document.getElementById('end').value = '16:00';
+    document.getElementById('start').value = '07:00';
+    document.getElementById('end').value = '22:00';
 
     // Default date to tomorrow
     const tomorrow = new Date(); tomorrow.setDate(tomorrow.getDate()+1);
