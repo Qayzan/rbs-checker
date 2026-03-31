@@ -22,20 +22,21 @@ from telegram.ext import (
 
 # Add repo root to path so 'shared' package is importable
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from shared.scraper import check_rooms_with_cookie
-from shared.store import save_cookie, get_cookie, delete_cookie, create_login_token
+from shared.scraper import check_rooms_with_cookie, login_and_get_cookie
 
 load_dotenv(os.path.join(os.path.dirname(__file__), '.env'))
-BOT_TOKEN   = os.environ['BOT_TOKEN']
-WEB_APP_URL = os.environ.get('WEB_APP_URL', '').rstrip('/')
+BOT_TOKEN = os.environ['BOT_TOKEN']
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 
 # Conversation states
-CHOOSE_DATE, CHOOSE_START, CHOOSE_END, AWAITING_COOKIE, AWAITING_CUSTOM_DATE = range(5)
+CHOOSE_DATE, CHOOSE_START, CHOOSE_END, AWAITING_COOKIE, AWAITING_CUSTOM_DATE, AWAITING_EMAIL, AWAITING_PASSWORD = range(7)
 
 # One scrape at a time
 scrape_lock = asyncio.Lock()
+
+# Cookie file
+COOKIES_FILE = os.path.join(os.path.dirname(__file__), 'cookies.json')
 
 COOKIE_INSTRUCTIONS = (
     "🔐 <b>Session expired</b>\n\n"
@@ -53,6 +54,31 @@ COOKIE_INSTRUCTIONS = (
     "5. Scroll to <b>Request Headers</b> → find <code>Cookie:</code>\n"
     "6. Copy the full value after <code>Cookie:</code> and paste it here"
 )
+
+
+def _load_cookies() -> dict:
+    if os.path.exists(COOKIES_FILE):
+        with open(COOKIES_FILE) as f:
+            return json.load(f)
+    return {}
+
+
+def _save_cookie(user_id: int, cookie_str: str) -> None:
+    data = _load_cookies()
+    data[str(user_id)] = cookie_str
+    with open(COOKIES_FILE, 'w') as f:
+        json.dump(data, f)
+
+
+def _delete_cookie(user_id: int) -> None:
+    data = _load_cookies()
+    data.pop(str(user_id), None)
+    with open(COOKIES_FILE, 'w') as f:
+        json.dump(data, f)
+
+
+def _get_cookie(user_id: int) -> str | None:
+    return _load_cookies().get(str(user_id))
 
 
 def _fmt_date(dt: datetime) -> str:
@@ -180,7 +206,7 @@ async def _run_check(update: Update, context: ContextTypes.DEFAULT_TYPE, cookie_
         except Exception as e:
             _done[0] = True
             if "SESSION_EXPIRED" in str(e):
-                delete_cookie(user_id)
+                _delete_cookie(user_id)
                 if status_msg:
                     await status_msg.edit_text(COOKIE_INSTRUCTIONS, parse_mode='HTML')
                 else:
@@ -264,7 +290,7 @@ async def end_time_chosen(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     end = query.data.replace("time_", "")
     context.user_data['end'] = end
     user_id = update.effective_user.id
-    cookie_str = get_cookie(user_id)
+    cookie_str = _get_cookie(user_id)
     if not cookie_str:
         await query.edit_message_text(COOKIE_INSTRUCTIONS, parse_mode='HTML')
         return AWAITING_COOKIE
@@ -277,7 +303,7 @@ async def end_time_chosen(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
 async def cookie_received(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     cookie_str = update.message.text.strip()
     user_id = update.effective_user.id
-    save_cookie(user_id, cookie_str)
+    _save_cookie(user_id, cookie_str)
     date = context.user_data['date']
     start = context.user_data['start']
     end = context.user_data['end']
@@ -286,26 +312,52 @@ async def cookie_received(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     return await _run_check(update, context, cookie_str)
 
 
-async def login_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    if not WEB_APP_URL:
-        await update.message.reply_text("❌ Web login is not configured. Contact the bot admin.")
-        return
-    token = create_login_token(update.effective_user.id)
-    url   = f"{WEB_APP_URL}/bot-login/{token}"
+async def login_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     await update.message.reply_text(
-        "🔐 <b>Secure Login</b>\n\n"
-        "Tap the button below to log in with your SIT credentials.\n"
-        "Your password is entered in your browser — Telegram never sees it.\n\n"
-        "<i>Link expires in 10 minutes.</i>",
-        parse_mode='HTML',
-        reply_markup=InlineKeyboardMarkup([[
-            InlineKeyboardButton("🌐 Log in to RBS", url=url)
-        ]])
+        "🔐 <b>Login to RBS</b>\n\nEnter your SIT email address:",
+        parse_mode='HTML'
     )
+    return AWAITING_EMAIL
+
+
+async def email_received(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    context.user_data['login_email'] = update.message.text.strip()
+    await update.message.reply_text(
+        "🔑 Enter your SIT password:\n\n<i>Your message will be deleted immediately.</i>",
+        parse_mode='HTML'
+    )
+    return AWAITING_PASSWORD
+
+
+async def password_received(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    password = update.message.text.strip()
+    email = context.user_data.get('login_email', '')
+    user_id = update.effective_user.id
+
+    try:
+        await update.message.delete()
+    except Exception:
+        pass
+
+    msg = await update.effective_chat.send_message("⏳ Logging in, please wait...")
+
+    try:
+        cookie_str = await login_and_get_cookie(email, password)
+        _save_cookie(user_id, cookie_str)
+        await msg.edit_text("✅ Logged in successfully! Use /check to check rooms.")
+    except Exception as e:
+        err = str(e)
+        if "LOGIN_FAILED" in err:
+            await msg.edit_text("❌ Login failed. Check your email and password and try /login again.")
+        else:
+            await msg.edit_text(f"❌ Unexpected error: {err[:200]}\n\nTry /login again.")
+
+    context.user_data.pop('login_email', None)
+    return ConversationHandler.END
 
 
 async def logout_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    delete_cookie(update.effective_user.id)
+    _delete_cookie(update.effective_user.id)
     context.user_data.clear()
     await update.message.reply_text("✅ Logged out. Your session has been cleared.")
 
@@ -314,7 +366,7 @@ async def recheck_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -
     query = update.callback_query
     await query.answer()
     user_id = update.effective_user.id
-    cookie_str = get_cookie(user_id)
+    cookie_str = _get_cookie(user_id)
     if not cookie_str:
         await query.message.reply_text("❌ No session found. Please /login first.")
         return
@@ -364,10 +416,19 @@ def main() -> None:
         fallbacks=[CommandHandler('cancel', cancel)],
     )
 
+    login_conv = ConversationHandler(
+        entry_points=[CommandHandler('login', login_command)],
+        states={
+            AWAITING_EMAIL: [MessageHandler(filters.TEXT & ~filters.COMMAND, email_received)],
+            AWAITING_PASSWORD: [MessageHandler(filters.TEXT & ~filters.COMMAND, password_received)],
+        },
+        fallbacks=[CommandHandler('cancel', cancel)],
+    )
+
     application.add_handler(CommandHandler('start', start_command))
-    application.add_handler(CommandHandler('login', login_command))
     application.add_handler(CommandHandler('logout', logout_command))
     application.add_handler(CallbackQueryHandler(recheck_callback, pattern='^recheck$'))
+    application.add_handler(login_conv)
     application.add_handler(check_conv)
 
     print("Bot started. Press Ctrl+C to stop.")
