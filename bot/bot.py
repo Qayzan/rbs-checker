@@ -6,7 +6,9 @@ import logging
 import os
 import sys
 import time
+from dataclasses import dataclass
 from datetime import datetime, timedelta
+from typing import Any
 
 from dotenv import load_dotenv
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
@@ -32,8 +34,16 @@ logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(level
 # Conversation states
 CHOOSE_DATE, CHOOSE_START, CHOOSE_END, AWAITING_COOKIE, AWAITING_CUSTOM_DATE, AWAITING_EMAIL, AWAITING_PASSWORD = range(7)
 
-# One scrape at a time
-scrape_lock = asyncio.Lock()
+# Queue-based scrape system — jobs processed one at a time, users told their position
+@dataclass
+class _CheckJob:
+    update: Any
+    context: Any
+    cookie_str: str
+    status_msg: Any
+
+_job_queue: asyncio.Queue = asyncio.Queue()
+_worker_busy: bool = False
 
 # Cookie file
 COOKIES_FILE = os.path.join(os.path.dirname(__file__), 'cookies.json')
@@ -140,18 +150,12 @@ _RESULT_KEYBOARD = InlineKeyboardMarkup([[
 ]])
 
 
-async def _run_check(update: Update, context: ContextTypes.DEFAULT_TYPE, cookie_str: str) -> int:
-    """Run the scraper, showing live progress, then edit the message with results."""
+async def _run_check(update: Update, context: ContextTypes.DEFAULT_TYPE, cookie_str: str, status_msg: Any = None) -> None:
+    """Run the scraper for one job, showing live progress then results."""
     date = context.user_data['date']
     start = context.user_data['start']
     end = context.user_data['end']
     user_id = update.effective_user.id
-
-    # Resolve the message we'll keep editing for progress + result
-    if update.callback_query:
-        status_msg = update.callback_query.message
-    else:
-        status_msg = context.user_data.get('_status_msg')
 
     # Guard flag: stops queued progress edits from overwriting the final result
     _done = [False]
@@ -188,32 +192,30 @@ async def _run_check(update: Update, context: ContextTypes.DEFAULT_TYPE, cookie_
             )
         )
 
-    async with scrape_lock:
-        try:
-            result = await check_rooms_with_cookie(cookie_str, date, start, end, log_fn)
-            final_text = _format_results(result)
-        except Exception as e:
-            _done[0] = True
-            if "SESSION_EXPIRED" in str(e):
-                _delete_cookie(user_id)
-                try:
-                    if status_msg:
-                        await status_msg.edit_text(COOKIE_INSTRUCTIONS, parse_mode='HTML')
-                    else:
-                        await update.message.reply_text(COOKIE_INSTRUCTIONS, parse_mode='HTML')
-                except Exception:
-                    pass
-                return AWAITING_COOKIE
-            final_text = f"❌ Error: {str(e)[:200]}"
-        # Set _done BEFORE the lock releases so any pending create_task progress
-        # edits see it immediately on their first await and bail out.
+    try:
+        result = await check_rooms_with_cookie(cookie_str, date, start, end, log_fn)
+        final_text = _format_results(result)
+    except Exception as e:
         _done[0] = True
+        if "SESSION_EXPIRED" in str(e):
+            _delete_cookie(user_id)
+            try:
+                if status_msg:
+                    await status_msg.edit_text(COOKIE_INSTRUCTIONS, parse_mode='HTML')
+                else:
+                    await update.effective_chat.send_message(COOKIE_INSTRUCTIONS, parse_mode='HTML')
+            except Exception:
+                pass
+            return
+        final_text = f"❌ Error: {str(e)[:200]}"
+    # Set _done before any pending progress create_tasks can fire on the next await.
+    _done[0] = True
 
     try:
         if status_msg:
             await status_msg.edit_text(final_text, parse_mode='HTML', reply_markup=_RESULT_KEYBOARD)
         else:
-            await update.message.reply_text(final_text, parse_mode='HTML', reply_markup=_RESULT_KEYBOARD)
+            await update.effective_chat.send_message(final_text, parse_mode='HTML', reply_markup=_RESULT_KEYBOARD)
     except Exception:
         # Edit failed (rate-limited, message unchanged, etc.) — send as a new message instead.
         try:
@@ -221,7 +223,35 @@ async def _run_check(update: Update, context: ContextTypes.DEFAULT_TYPE, cookie_
         except Exception:
             pass
 
-    return ConversationHandler.END
+
+async def _queue_worker() -> None:
+    """Background task — picks up check jobs and runs them one at a time."""
+    global _worker_busy
+    while True:
+        job: _CheckJob = await _job_queue.get()
+        _worker_busy = True
+        try:
+            await _run_check(job.update, job.context, job.cookie_str, job.status_msg)
+        except Exception as exc:
+            logging.exception("Queue worker unhandled error: %s", exc)
+        finally:
+            _worker_busy = False
+            _job_queue.task_done()
+
+
+async def _enqueue_check(update: Update, context: ContextTypes.DEFAULT_TYPE, cookie_str: str, status_msg: Any) -> None:
+    """Add a check job to the queue. If others are ahead, tells the user their position."""
+    await _job_queue.put(_CheckJob(update, context, cookie_str, status_msg))
+    if _worker_busy:
+        pos = _job_queue.qsize()
+        try:
+            await status_msg.edit_text(
+                f"⏳ <b>You're #{pos} in the queue.</b>\n\n"
+                "<i>Your check will start automatically when it's your turn.</i>",
+                parse_mode='HTML'
+            )
+        except Exception:
+            pass
 
 
 async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -238,9 +268,6 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
 
 
 async def check_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    if scrape_lock.locked():
-        await update.message.reply_text("⏳ A check is already running. Please try again in a moment.")
-        return ConversationHandler.END
     await update.message.reply_text("📅 Select a date:", reply_markup=_date_keyboard())
     return CHOOSE_DATE
 
@@ -296,10 +323,12 @@ async def end_time_chosen(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     if not cookie_str:
         await query.edit_message_text(COOKIE_INSTRUCTIONS, parse_mode='HTML')
         return AWAITING_COOKIE
+    status_msg = query.message
     await query.edit_message_text(
-        f"🔍 Checking rooms for {context.user_data['date']}, {context.user_data['start']}–{end}..."
+        f"🔍 Checking rooms for {context.user_data['date']}, {context.user_data['start']}–{end}…"
     )
-    return await _run_check(update, context, cookie_str)
+    await _enqueue_check(update, context, cookie_str, status_msg)
+    return ConversationHandler.END
 
 
 async def cookie_received(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
@@ -309,9 +338,9 @@ async def cookie_received(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     date = context.user_data['date']
     start = context.user_data['start']
     end = context.user_data['end']
-    msg = await update.message.reply_text(f"🔍 Checking rooms for {date}, {start}–{end}...")
-    context.user_data['_status_msg'] = msg
-    return await _run_check(update, context, cookie_str)
+    msg = await update.message.reply_text(f"🔍 Checking rooms for {date}, {start}–{end}…")
+    await _enqueue_check(update, context, cookie_str, msg)
+    return ConversationHandler.END
 
 
 async def login_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
@@ -394,25 +423,20 @@ async def recheck_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -
     if not cookie_str:
         await query.message.reply_text("❌ No session found. Please /login first.")
         return
-    if scrape_lock.locked():
-        await query.answer("⏳ A check is already running.", show_alert=True)
-        return
     date = context.user_data.get('date', '')
     start = context.user_data.get('start', '')
     end = context.user_data.get('end', '')
+    status_msg = query.message
     await query.edit_message_text(
         f"🔍 Checking rooms for {date}, {start}–{end}…",
         parse_mode='HTML'
     )
-    await _run_check(update, context, cookie_str)
+    await _enqueue_check(update, context, cookie_str, status_msg)
 
 
 async def newcheck_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     query = update.callback_query
     await query.answer()
-    if scrape_lock.locked():
-        await query.message.reply_text("⏳ A check is already running. Please try again in a moment.")
-        return ConversationHandler.END
     await query.message.reply_text("📅 Select a date:", reply_markup=_date_keyboard())
     return CHOOSE_DATE
 
@@ -423,7 +447,10 @@ async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
 
 
 def main() -> None:
-    application = Application.builder().token(BOT_TOKEN).build()
+    async def post_init(app: Application) -> None:
+        asyncio.create_task(_queue_worker())
+
+    application = Application.builder().token(BOT_TOKEN).post_init(post_init).build()
 
     check_conv = ConversationHandler(
         entry_points=[
