@@ -1,23 +1,23 @@
 # shared/scraper.py
 import os
-from playwright.sync_api import sync_playwright
+from playwright.async_api import async_playwright
 
 
-def _do_check(page, date, start_time, end_time, log_fn):
-    """Shared room-checking logic. Called after auth is set up."""
+async def _do_check_async(page, date, start_time, end_time, log_fn):
+    """Async version of _do_check for use with async_playwright."""
     log_fn('step', 'Loading booking search page...')
-    page.goto("https://rbs.singaporetech.edu.sg/SRB001/SRB001Page", timeout=15000)
-    page.wait_for_load_state("networkidle", timeout=15000)
+    await page.goto("https://rbs.singaporetech.edu.sg/SRB001/SRB001Page", timeout=15000)
+    await page.wait_for_load_state("networkidle", timeout=15000)
     log_fn('progress', done=2, total=5)
 
     log_fn('step', 'Selecting Discussion Room type...')
-    page.get_by_role('combobox', name='Resource Type').click()
-    page.wait_for_timeout(500)
-    page.get_by_role('option', name='Discussion Room').click()
-    page.wait_for_timeout(500)
+    await page.get_by_role('combobox', name='Resource Type').click()
+    await page.wait_for_timeout(500)
+    await page.get_by_role('option', name='Discussion Room').click()
+    await page.wait_for_timeout(500)
 
     log_fn('step', f'Setting date to {date}...')
-    page.evaluate(f"""
+    await page.evaluate(f"""
         var input = document.getElementById('searchSlotDate');
         var months = {{'Jan':0,'Feb':1,'Mar':2,'Apr':3,'May':4,'Jun':5,
                        'Jul':6,'Aug':7,'Sep':8,'Oct':9,'Nov':10,'Dec':11}};
@@ -28,20 +28,20 @@ def _do_check(page, date, start_time, end_time, log_fn):
         input.setAttribute('readonly', 'readonly');
         input.setAttribute('day', d.getFullYear() + '-' + d.getMonth() + '-' + d.getDate());
     """)
-    page.wait_for_timeout(300)
+    await page.wait_for_timeout(300)
 
     log_fn('step', f'Setting time {start_time} \u2192 {end_time}...')
-    page.select_option('#SearchHoursFrom', label=start_time)
-    page.select_option('#SearchHoursTo', label=end_time)
+    await page.select_option('#SearchHoursFrom', label=start_time)
+    await page.select_option('#SearchHoursTo', label=end_time)
     log_fn('progress', done=3, total=5)
 
     log_fn('step', 'Searching for available rooms...')
-    page.get_by_role('button', name='Search', exact=True).click()
-    page.wait_for_selector('.cardwimg', timeout=20000)
-    page.wait_for_timeout(1500)
+    await page.get_by_role('button', name='Search', exact=True).click()
+    await page.wait_for_selector('.cardwimg', timeout=20000)
+    await page.wait_for_timeout(1500)
     log_fn('progress', done=4, total=5)
 
-    cards = page.evaluate("""
+    cards = await page.evaluate("""
     () => {
         const token      = document.querySelector('input[name=__RequestVerificationToken]')?.value || '';
         const searchDate = document.querySelector('#searchSlotDate')?.value || '';
@@ -69,7 +69,7 @@ def _do_check(page, date, start_time, end_time, log_fn):
         log_fn('step', f'[{i+1}/{total_rooms}] {room_name}')
 
         try:
-            data = page.evaluate("""
+            data = await page.evaluate("""
             async (c) => {
                 const params = new URLSearchParams({
                     __RequestVerificationToken: c.token,
@@ -125,73 +125,80 @@ def _do_check(page, date, start_time, end_time, log_fn):
 
 def check_rooms(username, password, date, start_time, end_time, log_fn):
     """Used by the Flask web app. Authenticates with username and password."""
-    with sync_playwright() as p:
-        browser = p.chromium.launch(headless=True)
-        page = browser.new_page()
+    import asyncio
 
-        log_fn('step', 'Navigating to RBS login...')
-        page.goto("https://rbs.singaporetech.edu.sg/SRB001/SRB001Page", timeout=20000)
-        page.wait_for_selector(
-            '#userNameInput, input[name="UserName"], input[placeholder="someone@example.com"]',
-            timeout=15000
-        )
-        log_fn('step', 'Signing in...')
-        page.fill('input[placeholder="someone@example.com"]', username)
-        page.fill('input[type="password"]', password)
-        page.locator('#submitButton, input[type="submit"], button[type="submit"]').first.click()
+    async def _inner():
+        async with async_playwright() as p:
+            browser = await p.chromium.launch(headless=True)
+            page = await browser.new_page()
 
-        try:
-            page.wait_for_selector(
-                '[data-bind*="errorText"], #errorText, #usernameError, '
-                '.alert-error, [class*="error"], [id*="error"]',
-                timeout=3000
+            log_fn('step', 'Navigating to RBS login...')
+            await page.goto("https://rbs.singaporetech.edu.sg/SRB001/SRB001Page", timeout=20000)
+            await page.wait_for_selector(
+                '#userNameInput, input[name="UserName"], input[placeholder="someone@example.com"]',
+                timeout=15000
             )
-            error_el = page.locator(
-                '[data-bind*="errorText"], #errorText, #usernameError, '
-                '.alert-error, [class*="error"], [id*="error"]'
-            ).first
-            error_text = error_el.inner_text().strip()
-            if error_text:
-                raise Exception(f"Login failed: {error_text}")
-            raise Exception("Login failed: incorrect email or password.")
-        except Exception as e:
-            if "Login failed" in str(e):
-                raise
+            log_fn('step', 'Signing in...')
+            await page.fill('input[placeholder="someone@example.com"]', username)
+            await page.fill('input[type="password"]', password)
+            await page.locator('#submitButton, input[type="submit"], button[type="submit"]').first.click()
 
-        page.wait_for_url("**/rbs.singaporetech.edu.sg/**", timeout=20000)
-        page.wait_for_load_state("networkidle", timeout=20000)
+            try:
+                await page.wait_for_selector(
+                    '[data-bind*="errorText"], #errorText, #usernameError, '
+                    '.alert-error, [class*="error"], [id*="error"]',
+                    timeout=3000
+                )
+                error_el = page.locator(
+                    '[data-bind*="errorText"], #errorText, #usernameError, '
+                    '.alert-error, [class*="error"], [id*="error"]'
+                ).first
+                error_text = (await error_el.inner_text()).strip()
+                await browser.close()
+                if error_text:
+                    raise Exception(f"Login failed: {error_text}")
+                raise Exception("Login failed: incorrect email or password.")
+            except Exception as e:
+                if "Login failed" in str(e):
+                    raise
 
-        if 'login.microsoftonline' in page.url or 'sts.singaporetech' in page.url:
-            raise Exception("Login failed: incorrect email or password.")
+            await page.wait_for_url("**/rbs.singaporetech.edu.sg/**", timeout=20000)
+            await page.wait_for_load_state("networkidle", timeout=20000)
 
-        log_fn('info', 'Login successful.')
-        log_fn('progress', done=1, total=5)
+            if 'login.microsoftonline' in page.url or 'sts.singaporetech' in page.url:
+                await browser.close()
+                raise Exception("Login failed: incorrect email or password.")
 
-        result = _do_check(page, date, start_time, end_time, log_fn)
-        browser.close()
-        return result
+            log_fn('info', 'Login successful.')
+            log_fn('progress', done=1, total=5)
+
+            result = await _do_check_async(page, date, start_time, end_time, log_fn)
+            await browser.close()
+            return result
+
+    return asyncio.run(_inner())
 
 
-def login_and_get_cookie(username, password):
+async def login_and_get_cookie(username, password):
     """Log in with username/password and return the session cookie string.
 
     Raises Exception("LOGIN_FAILED: <reason>") on bad credentials.
     """
-    with sync_playwright() as p:
-        browser = p.chromium.launch(headless=True)
-        page = browser.new_page()
+    async with async_playwright() as p:
+        browser = await p.chromium.launch(headless=True)
+        page = await browser.new_page()
 
-        page.goto("https://rbs.singaporetech.edu.sg/SRB001/SRB001Page", timeout=20000)
-        page.wait_for_selector(
+        await page.goto("https://rbs.singaporetech.edu.sg/SRB001/SRB001Page", timeout=20000)
+        await page.wait_for_selector(
             '#userNameInput, input[name="UserName"], input[placeholder="someone@example.com"]',
             timeout=15000
         )
-        page.fill('input[placeholder="someone@example.com"]', username)
-        page.fill('input[type="password"]', password)
-        page.locator('#submitButton, input[type="submit"], button[type="submit"]').first.click()
+        await page.fill('input[placeholder="someone@example.com"]', username)
+        await page.fill('input[type="password"]', password)
+        await page.locator('#submitButton, input[type="submit"], button[type="submit"]').first.click()
 
         try:
-            page.wait_for_selector(
+            await page.wait_for_selector(
                 '[data-bind*="errorText"], #errorText, #usernameError, '
                 '.alert-error, [class*="error"], [id*="error"]',
                 timeout=3000
@@ -200,33 +207,32 @@ def login_and_get_cookie(username, password):
                 '[data-bind*="errorText"], #errorText, #usernameError, '
                 '.alert-error, [class*="error"], [id*="error"]'
             ).first
-            error_text = error_el.inner_text().strip()
+            error_text = (await error_el.inner_text()).strip()
+            await browser.close()
             if error_text:
-                browser.close()
                 raise Exception(f"LOGIN_FAILED: {error_text}")
-            browser.close()
             raise Exception("LOGIN_FAILED: incorrect email or password.")
         except Exception as e:
             if "LOGIN_FAILED" in str(e):
                 raise
 
-        page.wait_for_url("**/rbs.singaporetech.edu.sg/**", timeout=20000)
-        page.wait_for_load_state("networkidle", timeout=20000)
+        await page.wait_for_url("**/rbs.singaporetech.edu.sg/**", timeout=20000)
+        await page.wait_for_load_state("networkidle", timeout=20000)
 
         if 'login.microsoftonline' in page.url or 'sts.singaporetech' in page.url:
-            browser.close()
+            await browser.close()
             raise Exception("LOGIN_FAILED: incorrect email or password.")
 
-        cookies = page.context.cookies()
+        cookies = await page.context.cookies()
         cookie_str = '; '.join(
             f"{c['name']}={c['value']}" for c in cookies
             if 'singaporetech.edu.sg' in c.get('domain', '')
         )
-        browser.close()
+        await browser.close()
         return cookie_str
 
 
-def check_rooms_with_cookie(cookie_string, date, start_time, end_time, log_fn):
+async def check_rooms_with_cookie(cookie_string, date, start_time, end_time, log_fn):
     """Used by the Telegram bot. Authenticates using a browser cookie string.
 
     cookie_string: raw Cookie header value, e.g. "name=value; name2=value2"
@@ -244,23 +250,23 @@ def check_rooms_with_cookie(cookie_string, date, start_time, end_time, log_fn):
                 'path': '/',
             })
 
-    with sync_playwright() as p:
-        browser = p.chromium.launch(headless=True)
-        context = browser.new_context()
-        context.add_cookies(cookies)
-        page = context.new_page()
+    async with async_playwright() as p:
+        browser = await p.chromium.launch(headless=True)
+        context = await browser.new_context()
+        await context.add_cookies(cookies)
+        page = await context.new_page()
 
         log_fn('step', 'Navigating to RBS with saved session...')
-        page.goto("https://rbs.singaporetech.edu.sg/SRB001/SRB001Page", timeout=20000)
-        page.wait_for_load_state("networkidle", timeout=20000)
+        await page.goto("https://rbs.singaporetech.edu.sg/SRB001/SRB001Page", timeout=20000)
+        await page.wait_for_load_state("networkidle", timeout=20000)
 
         if 'login.microsoftonline' in page.url or 'sts.singaporetech' in page.url:
-            browser.close()
+            await browser.close()
             raise Exception("SESSION_EXPIRED")
 
         log_fn('info', 'Session valid. Proceeding...')
         log_fn('progress', done=1, total=5)
 
-        result = _do_check(page, date, start_time, end_time, log_fn)
-        browser.close()
+        result = await _do_check_async(page, date, start_time, end_time, log_fn)
+        await browser.close()
         return result

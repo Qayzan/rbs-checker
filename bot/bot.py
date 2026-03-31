@@ -1,10 +1,11 @@
 # bot/bot.py
+from __future__ import annotations
 import asyncio
 import json
 import logging
 import os
 import sys
-from concurrent.futures import ThreadPoolExecutor
+import time
 from datetime import datetime, timedelta
 
 from dotenv import load_dotenv
@@ -33,7 +34,6 @@ CHOOSE_DATE, CHOOSE_START, CHOOSE_END, AWAITING_COOKIE, AWAITING_CUSTOM_DATE, AW
 
 # One scrape at a time
 scrape_lock = asyncio.Lock()
-executor = ThreadPoolExecutor(max_workers=1)
 
 # Cookie file
 COOKIES_FILE = os.path.join(os.path.dirname(__file__), 'cookies.json')
@@ -129,42 +129,73 @@ def _format_results(data: dict) -> str:
 
 
 async def _run_check(update: Update, context: ContextTypes.DEFAULT_TYPE, cookie_str: str) -> int:
-    """Run the scraper and edit the status message with results. Returns next state."""
+    """Run the scraper, showing live progress, then edit the message with results."""
     date = context.user_data['date']
     start = context.user_data['start']
     end = context.user_data['end']
     user_id = update.effective_user.id
 
-    loop = asyncio.get_event_loop()
-    async with scrape_lock:
-        try:
-            result = await loop.run_in_executor(
-                executor,
-                lambda: check_rooms_with_cookie(
-                    cookie_str, date, start, end,
-                    lambda *a, **kw: None
-                )
-            )
-            text = _format_results(result)
-        except Exception as e:
-            if "SESSION_EXPIRED" in str(e):
-                _delete_cookie(user_id)
-                reply_text = COOKIE_INSTRUCTIONS
-                if update.callback_query:
-                    await update.callback_query.edit_message_text(reply_text, parse_mode='HTML')
-                else:
-                    await update.message.reply_text(reply_text, parse_mode='HTML')
-                return AWAITING_COOKIE
-            text = f"❌ Error: {str(e)[:200]}"
-
+    # Resolve the message we'll keep editing for progress + result
     if update.callback_query:
-        await update.callback_query.edit_message_text(text, parse_mode='HTML')
+        status_msg = update.callback_query.message
     else:
         status_msg = context.user_data.get('_status_msg')
-        if status_msg:
+
+    # Guard flag: stops queued progress edits from overwriting the final result
+    _done = [False]
+    _last_edit = [0.0]
+    _step = ['']
+
+    async def _do_edit(text: str) -> None:
+        if _done[0]:
+            return
+        try:
             await status_msg.edit_text(text, parse_mode='HTML')
-        else:
-            await update.message.reply_text(text, parse_mode='HTML')
+        except Exception:
+            pass
+
+    def log_fn(level, msg=None, **kwargs):
+        if level == 'step':
+            _step[0] = msg or ''
+            return
+        if level != 'progress':
+            return
+        now = time.monotonic()
+        if now - _last_edit[0] < 2.5:   # throttle: max one Telegram edit per 2.5 s
+            return
+        _last_edit[0] = now
+        done = kwargs.get('done', 0)
+        total = kwargs.get('total', 1)
+        filled = int(done / total * 10)
+        bar = '▓' * filled + '░' * (10 - filled)
+        asyncio.get_running_loop().create_task(
+            _do_edit(
+                f"🔍 <b>Checking rooms…</b>\n"
+                f"{bar} {done}/{total}\n"
+                f"<i>{_step[0]}</i>"
+            )
+        )
+
+    async with scrape_lock:
+        try:
+            result = await check_rooms_with_cookie(cookie_str, date, start, end, log_fn)
+            final_text = _format_results(result)
+        except Exception as e:
+            _done[0] = True
+            if "SESSION_EXPIRED" in str(e):
+                _delete_cookie(user_id)
+                if status_msg:
+                    await status_msg.edit_text(COOKIE_INSTRUCTIONS, parse_mode='HTML')
+                else:
+                    await update.message.reply_text(COOKIE_INSTRUCTIONS, parse_mode='HTML')
+                return AWAITING_COOKIE
+            final_text = f"❌ Error: {str(e)[:200]}"
+
+    _done[0] = True
+    if status_msg:
+        await status_msg.edit_text(final_text, parse_mode='HTML')
+    else:
+        await update.message.reply_text(final_text, parse_mode='HTML')
 
     return ConversationHandler.END
 
@@ -299,12 +330,8 @@ async def password_received(update: Update, context: ContextTypes.DEFAULT_TYPE) 
 
     msg = await update.effective_chat.send_message("⏳ Logging in, please wait...")
 
-    loop = asyncio.get_event_loop()
     try:
-        cookie_str = await loop.run_in_executor(
-            executor,
-            lambda: login_and_get_cookie(email, password)
-        )
+        cookie_str = await login_and_get_cookie(email, password)
         _save_cookie(user_id, cookie_str)
         await msg.edit_text("✅ Logged in successfully! Use /check to check rooms.")
     except Exception as e:
