@@ -148,6 +148,86 @@ def _format_results(data: dict) -> str:
     return "\n".join(lines)
 
 
+def _paginate_results(data: dict, max_len: int = 3500) -> list[str]:
+    """Split long result output into Telegram-safe HTML message chunks."""
+    fully = data['fully']
+    partial = data['partial']
+    none_list = data['none']
+
+    sections: list[tuple[str, list[str]]] = [
+        (
+            f"✅ <b>Fully Available ({len(fully)})</b>",
+            [
+                f"• {r['name']}" + (
+                    f"\n  ↳ <i>{', '.join(r.get('slots', [])[:10])}"
+                    f"{' +' + str(len(r.get('slots', [])) - 10) + ' more' if len(r.get('slots', [])) > 10 else ''}</i>"
+                    if r.get('slots') else ''
+                )
+                for r in fully
+            ] or ["<i>None</i>"],
+        ),
+        (
+            f"🟡 <b>Partially Available ({len(partial)})</b>",
+            [
+                f"• {r['name']} — {r['avail']}/{r['total']} free"
+                + (
+                    f"\n  ↳ <i>{', '.join(s['time'] for s in r.get('slots', []) if s['avail'])}</i>"
+                    if any(s['avail'] for s in r.get('slots', [])) else ''
+                )
+                for r in partial
+            ] or ["<i>None</i>"],
+        ),
+        (
+            f"❌ <b>Fully Booked ({len(none_list)})</b>",
+            [f"• {n}" for n in none_list] or ["<i>None</i>"],
+        ),
+    ]
+
+    pages: list[str] = []
+    current_lines: list[str] = []
+
+    def flush_page() -> None:
+        if current_lines:
+            pages.append("\n".join(current_lines))
+            current_lines.clear()
+
+    def append_block(block: str) -> None:
+        candidate = "\n".join(current_lines + [block]) if current_lines else block
+        if current_lines and len(candidate) > max_len:
+            flush_page()
+        current_lines.append(block)
+
+    for header, items in sections:
+        append_block(header)
+        for item in items:
+            item = item.strip()
+            if len(item) <= max_len:
+                append_block(item)
+                continue
+
+            parts = item.split("\n")
+            chunk = ""
+            for part in parts:
+                piece = part if not chunk else f"{chunk}\n{part}"
+                if chunk and len(piece) > max_len:
+                    append_block(chunk)
+                    chunk = part
+                else:
+                    chunk = piece
+            if chunk:
+                append_block(chunk)
+
+        append_block("")
+
+    flush_page()
+
+    if len(pages) <= 1:
+        return pages
+
+    total = len(pages)
+    return [f"<b>Results {idx}/{total}</b>\n\n{page}".strip() for idx, page in enumerate(pages, start=1)]
+
+
 _RESULT_KEYBOARD = InlineKeyboardMarkup([[
     InlineKeyboardButton("🔄 Check again", callback_data="recheck"),
     InlineKeyboardButton("📅 New search", callback_data="newcheck"),
@@ -220,18 +300,40 @@ async def _run_check(update: Update, context: ContextTypes.DEFAULT_TYPE, cookie_
     # Send results as a brand-new message — completely avoids the per-message
     # edit rate limit that was causing the progress bar to stay stuck.
     chat_id = status_msg.chat_id if status_msg else update.effective_chat.id
+    sent_any = False
     try:
-        await context.bot.send_message(
-            chat_id=chat_id,
-            text=final_text,
-            parse_mode='HTML',
-            reply_markup=_RESULT_KEYBOARD,
-        )
+        if final_text.startswith("❌ Error:"):
+            await context.bot.send_message(
+                chat_id=chat_id,
+                text=final_text,
+                parse_mode='HTML',
+                reply_markup=_RESULT_KEYBOARD,
+            )
+            sent_any = True
+        else:
+            pages = _paginate_results(result)
+            for idx, page in enumerate(pages):
+                await context.bot.send_message(
+                    chat_id=chat_id,
+                    text=page,
+                    parse_mode='HTML',
+                    reply_markup=_RESULT_KEYBOARD if idx == len(pages) - 1 else None,
+                )
+                sent_any = True
     except Exception as e:
         logging.error("Failed to send results: %s", e)
+        if status_msg and not sent_any:
+            try:
+                await status_msg.edit_text(
+                    "❌ Failed to send results because the Telegram message was too long.",
+                    reply_markup=_RESULT_KEYBOARD,
+                )
+                return
+            except Exception:
+                pass
 
     # Delete the now-stale progress bar message.
-    if status_msg:
+    if status_msg and sent_any:
         try:
             await status_msg.delete()
         except Exception:
