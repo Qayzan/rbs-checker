@@ -12,6 +12,7 @@ from typing import Any
 
 from dotenv import load_dotenv
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
+from telegram.error import RetryAfter
 from telegram.ext import (
     Application,
     CallbackQueryHandler,
@@ -208,20 +209,28 @@ async def _run_check(update: Update, context: ContextTypes.DEFAULT_TYPE, cookie_
                 pass
             return
         final_text = f"❌ Error: {str(e)[:200]}"
-    # Set _done before any pending progress create_tasks can fire on the next await.
+    # Set _done, then yield so any in-flight create_task progress edits fire and
+    # see _done=True before we attempt the final edit.
     _done[0] = True
+    await asyncio.sleep(0)
 
-    try:
-        if status_msg:
-            await status_msg.edit_text(final_text, parse_mode='HTML', reply_markup=_RESULT_KEYBOARD)
-        else:
-            await update.effective_chat.send_message(final_text, parse_mode='HTML', reply_markup=_RESULT_KEYBOARD)
-    except Exception:
-        # Edit failed (rate-limited, message unchanged, etc.) — send as a new message instead.
+    # Send final results, retrying once if Telegram rate-limits us.
+    for attempt in range(3):
         try:
-            await update.effective_chat.send_message(final_text, parse_mode='HTML', reply_markup=_RESULT_KEYBOARD)
+            if status_msg:
+                await status_msg.edit_text(final_text, parse_mode='HTML', reply_markup=_RESULT_KEYBOARD)
+            else:
+                await update.effective_chat.send_message(final_text, parse_mode='HTML', reply_markup=_RESULT_KEYBOARD)
+            break
+        except RetryAfter as e:
+            await asyncio.sleep(e.retry_after + 1)
         except Exception:
-            pass
+            # Non-rate-limit failure — fall back to a fresh message.
+            try:
+                await update.effective_chat.send_message(final_text, parse_mode='HTML', reply_markup=_RESULT_KEYBOARD)
+            except Exception:
+                pass
+            break
 
 
 async def _queue_worker() -> None:
