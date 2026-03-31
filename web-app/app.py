@@ -5,7 +5,7 @@ from shared.scraper import check_rooms
 import json, threading, queue, uuid, time
 
 app = Flask(__name__)
-_sessions = {}  # session_id -> Queue
+_sessions = {}  # session_id -> (Queue, created_time)
 
 HTML = """
 <!DOCTYPE html>
@@ -99,6 +99,9 @@ HTML = """
   </div>
 
   <div id="results"></div>
+  <div style="text-align:center;margin-top:16px;max-width:720px;width:100%">
+    <button id="recheckBtn" style="display:none;width:auto;padding:10px 28px;font-size:0.9rem" onclick="recheckSame()">🔄 Check Again</button>
+  </div>
 
   <script>
     // Populate time dropdowns
@@ -147,6 +150,7 @@ HTML = """
       }
 
       btn.disabled = true;
+      document.getElementById('recheckBtn').style.display = 'none';
       results.innerHTML = '';
       logBox.innerHTML  = '';
       logBox.style.display       = 'block';
@@ -197,6 +201,7 @@ HTML = """
             const d = msg.data;
             status.textContent = `Done! Checked ${d.fully.length + d.partial.length + d.none.length} rooms.`;
             renderResults(d);
+            document.getElementById('recheckBtn').style.display = 'inline-block';
             playChime();
             btn.disabled = false;
             es.close();
@@ -224,6 +229,14 @@ HTML = """
     });
 
     // ── Helpers ─────────────────────────────────────────────────────────────
+    function esc(s) {
+      return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+    }
+
+    function recheckSame() {
+      document.getElementById('form').dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }));
+    }
+
     function appendLog(level, msg) {
       const logBox = document.getElementById('logBox');
       const line   = document.createElement('div');
@@ -260,19 +273,19 @@ HTML = """
       results.innerHTML += section('full', `\u2705 Fully Available \u2014 ${fully.length} room(s)`,
         fully.length ? fully.map(r => `
           <div class="room-row">
-            <div class="room-name">${r.name}</div>
-            <div class="slots">${r.slots.map(s => `<span class="slot avail">${s}</span>`).join('')}</div>
+            <div class="room-name">${esc(r.name)}</div>
+            <div class="slots">${r.slots.map(s => `<span class="slot avail">${esc(s)}</span>`).join('')}</div>
           </div>`).join('') : '<div class="empty">No rooms fully available for this time range.</div>');
 
       results.innerHTML += section('partial', `&#x1F7E1; Partially Available \u2014 ${partial.length} room(s)`,
         partial.length ? partial.map(r => `
           <div class="room-row">
-            <div class="room-name">${r.name} (${r.avail}/${r.total} slots free)</div>
-            <div class="slots">${r.slots.map(s => `<span class="slot ${s.avail ? 'avail' : 'taken'}">${s.time}</span>`).join('')}</div>
+            <div class="room-name">${esc(r.name)} (${r.avail}/${r.total} slots free)</div>
+            <div class="slots">${r.slots.map(s => `<span class="slot ${s.avail ? 'avail' : 'taken'}">${esc(s.time)}</span>`).join('')}</div>
           </div>`).join('') : '<div class="empty">No partially available rooms.</div>');
 
       results.innerHTML += section('none', `\u274C Fully Booked \u2014 ${none.length} room(s)`,
-        none.length ? none.map(n => `<div class="room-row"><div class="room-name">${n}</div></div>`).join('') : '<div class="empty">None.</div>');
+        none.length ? none.map(n => `<div class="room-row"><div class="room-name">${esc(n)}</div></div>`).join('') : '<div class="empty">None.</div>');
     }
 
     function section(cls, title, body) {
@@ -291,10 +304,16 @@ def index():
 
 @app.route("/start", methods=["POST"])
 def start():
+    # Clean up sessions older than 5 minutes
+    cutoff = time.time() - 300
+    stale = [s for s, (_, ts) in _sessions.items() if ts < cutoff]
+    for s in stale:
+        _sessions.pop(s, None)
+
     data = request.get_json()
     sid = str(uuid.uuid4())
     q = queue.Queue()
-    _sessions[sid] = q
+    _sessions[sid] = (q, time.time())
 
     def log_fn(level, msg=None, **kwargs):
         if level == 'progress':
@@ -324,7 +343,8 @@ def start():
 
 @app.route("/stream/<sid>")
 def stream(sid):
-    q = _sessions.get(sid)
+    entry = _sessions.get(sid)
+    q = entry[0] if entry else None
     if not q:
         def err():
             yield 'data: {"type":"error","msg":"session not found"}\n\n'

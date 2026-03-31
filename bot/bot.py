@@ -39,20 +39,9 @@ scrape_lock = asyncio.Lock()
 COOKIES_FILE = os.path.join(os.path.dirname(__file__), 'cookies.json')
 
 COOKIE_INSTRUCTIONS = (
-    "🔐 <b>Session expired</b>\n\n"
-    "Use /login to log back in with your SIT credentials.\n\n"
-    "<b>Or paste a session cookie manually:</b>\n\n"
-    "<b>Option A — Bookmarklet:</b>\n"
-    "1. Add the bookmarklet from the GitHub repo to your browser\n"
-    "2. Log into RBS, then click the bookmarklet\n"
-    "3. Paste the copied text here\n\n"
-    "<b>Option B — DevTools:</b>\n"
-    "1. Log into <a href='https://rbs.singaporetech.edu.sg'>RBS</a>\n"
-    "2. Press <code>F12</code> → <b>Network</b> tab\n"
-    "3. Press <code>F5</code> to reload\n"
-    "4. Click any request in the list\n"
-    "5. Scroll to <b>Request Headers</b> → find <code>Cookie:</code>\n"
-    "6. Copy the full value after <code>Cookie:</code> and paste it here"
+    "🔐 <b>Not logged in</b>\n\n"
+    "Use /login to sign in with your SIT credentials.\n\n"
+    "<i>Or paste a session cookie directly if you have one.</i>"
 )
 
 
@@ -207,18 +196,30 @@ async def _run_check(update: Update, context: ContextTypes.DEFAULT_TYPE, cookie_
             _done[0] = True
             if "SESSION_EXPIRED" in str(e):
                 _delete_cookie(user_id)
-                if status_msg:
-                    await status_msg.edit_text(COOKIE_INSTRUCTIONS, parse_mode='HTML')
-                else:
-                    await update.message.reply_text(COOKIE_INSTRUCTIONS, parse_mode='HTML')
+                try:
+                    if status_msg:
+                        await status_msg.edit_text(COOKIE_INSTRUCTIONS, parse_mode='HTML')
+                    else:
+                        await update.message.reply_text(COOKIE_INSTRUCTIONS, parse_mode='HTML')
+                except Exception:
+                    pass
                 return AWAITING_COOKIE
             final_text = f"❌ Error: {str(e)[:200]}"
+        # Set _done BEFORE the lock releases so any pending create_task progress
+        # edits see it immediately on their first await and bail out.
+        _done[0] = True
 
-    _done[0] = True
-    if status_msg:
-        await status_msg.edit_text(final_text, parse_mode='HTML', reply_markup=_RESULT_KEYBOARD)
-    else:
-        await update.message.reply_text(final_text, parse_mode='HTML', reply_markup=_RESULT_KEYBOARD)
+    try:
+        if status_msg:
+            await status_msg.edit_text(final_text, parse_mode='HTML', reply_markup=_RESULT_KEYBOARD)
+        else:
+            await update.message.reply_text(final_text, parse_mode='HTML', reply_markup=_RESULT_KEYBOARD)
+    except Exception:
+        # Edit failed (rate-limited, message unchanged, etc.) — send as a new message instead.
+        try:
+            await update.effective_chat.send_message(final_text, parse_mode='HTML', reply_markup=_RESULT_KEYBOARD)
+        except Exception:
+            pass
 
     return ConversationHandler.END
 
@@ -229,6 +230,7 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         "Commands:\n"
         "/login — Log in with your SIT credentials\n"
         "/check — Check room availability\n"
+        "/status — Show your current login status\n"
         "/logout — Clear your saved session\n\n"
         "Use /login to get started.",
         parse_mode='HTML'
@@ -322,7 +324,11 @@ async def login_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
 
 async def email_received(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     context.user_data['login_email'] = update.message.text.strip()
-    await update.message.reply_text(
+    try:
+        await update.message.delete()
+    except Exception:
+        pass
+    await update.effective_chat.send_message(
         "🔑 Enter your SIT password:\n\n<i>Your message will be deleted immediately.</i>",
         parse_mode='HTML'
     )
@@ -354,6 +360,24 @@ async def password_received(update: Update, context: ContextTypes.DEFAULT_TYPE) 
 
     context.user_data.pop('login_email', None)
     return ConversationHandler.END
+
+
+async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    cookie_str = _get_cookie(update.effective_user.id)
+    if cookie_str:
+        date = context.user_data.get('date', '—')
+        start = context.user_data.get('start', '—')
+        end = context.user_data.get('end', '—')
+        last = f"\n\nLast search: {date}, {start}–{end}" if context.user_data.get('date') else ''
+        await update.message.reply_text(
+            f"✅ <b>Logged in</b>\n\nYou have an active session.{last}\n\nUse /check to check rooms or /logout to clear your session.",
+            parse_mode='HTML'
+        )
+    else:
+        await update.message.reply_text(
+            "❌ <b>Not logged in</b>\n\nUse /login to sign in with your SIT credentials.",
+            parse_mode='HTML'
+        )
 
 
 async def logout_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -414,6 +438,7 @@ def main() -> None:
             AWAITING_COOKIE: [MessageHandler(filters.TEXT & ~filters.COMMAND, cookie_received)],
         },
         fallbacks=[CommandHandler('cancel', cancel)],
+        allow_reentry=True,
     )
 
     login_conv = ConversationHandler(
@@ -426,6 +451,7 @@ def main() -> None:
     )
 
     application.add_handler(CommandHandler('start', start_command))
+    application.add_handler(CommandHandler('status', status_command))
     application.add_handler(CommandHandler('logout', logout_command))
     application.add_handler(CallbackQueryHandler(recheck_callback, pattern='^recheck$'))
     application.add_handler(login_conv)
