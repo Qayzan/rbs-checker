@@ -1,8 +1,12 @@
 import sys, os
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from flask import Flask, request, jsonify, render_template_string, Response
-from shared.scraper import check_rooms
-import json, threading, queue, uuid, time
+from shared.scraper import check_rooms, login_and_get_cookie
+from shared.store import is_valid_token, consume_login_token, save_cookie
+import asyncio, json, threading, queue, urllib.request, uuid, time
+
+from dotenv import load_dotenv
+load_dotenv(os.path.join(os.path.dirname(__file__), '..', 'bot', '.env'))
 
 app = Flask(__name__)
 _sessions = {}  # session_id -> Queue
@@ -282,6 +286,181 @@ HTML = """
 </body>
 </html>
 """
+
+
+def _notify_telegram(tg_user_id: int, text: str) -> None:
+    """Send a message to a Telegram user via the Bot API."""
+    bot_token = os.environ.get('BOT_TOKEN', '')
+    if not bot_token:
+        return
+    try:
+        payload = json.dumps({'chat_id': tg_user_id, 'text': text, 'parse_mode': 'HTML'}).encode()
+        req = urllib.request.Request(
+            f'https://api.telegram.org/bot{bot_token}/sendMessage',
+            data=payload,
+            headers={'Content-Type': 'application/json'},
+        )
+        urllib.request.urlopen(req, timeout=10)
+    except Exception:
+        pass
+
+
+BOT_LOGIN_HTML = """<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>Log in to RBS</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body { font-family: 'Segoe UI', sans-serif; background: #f0f2f5; min-height: 100vh;
+           display: flex; align-items: center; justify-content: center; padding: 24px 16px; }
+    .card { background: white; border-radius: 12px; box-shadow: 0 2px 16px rgba(0,0,0,0.1);
+            padding: 32px; width: 100%; max-width: 400px; }
+    h1 { font-size: 1.3rem; color: #c0392b; margin-bottom: 4px; }
+    .subtitle { color: #666; font-size: 0.85rem; margin-bottom: 24px; }
+    label { display: block; font-size: 0.85rem; font-weight: 600; color: #333;
+            margin-bottom: 4px; margin-top: 14px; }
+    input { width: 100%; padding: 10px 12px; border: 1px solid #ddd; border-radius: 8px;
+            font-size: 0.95rem; color: #333; background: #fafafa; }
+    input:focus { outline: none; border-color: #c0392b; background: white; }
+    button { width: 100%; margin-top: 22px; padding: 12px; background: #c0392b; color: white;
+             border: none; border-radius: 8px; font-size: 1rem; font-weight: 600;
+             cursor: pointer; transition: background 0.2s; }
+    button:hover { background: #a93226; }
+    button:disabled { background: #ccc; cursor: not-allowed; }
+    .status { margin-top: 14px; text-align: center; font-size: 0.9rem; min-height: 20px; }
+    .status.error   { color: #c0392b; }
+    .status.success { color: #1e8449; font-weight: 600; }
+    .note { margin-top: 20px; font-size: 0.75rem; color: #aaa; text-align: center; line-height: 1.6; }
+    .spinner { display: inline-block; width: 16px; height: 16px; border: 2px solid #ddd;
+               border-top-color: white; border-radius: 50%;
+               animation: spin 0.6s linear infinite; vertical-align: middle; margin-right: 6px; }
+    @keyframes spin { to { transform: rotate(360deg); } }
+  </style>
+</head>
+<body>
+  <div class="card">
+    <h1>Log in to RBS</h1>
+    <p class="subtitle">SIT Room Booking System</p>
+
+    <label>SIT Email</label>
+    <input type="email" id="email" placeholder="e.g. 1234567@sit.singaporetech.edu.sg"
+           autocomplete="email"/>
+
+    <label>Password</label>
+    <input type="password" id="password" autocomplete="current-password"/>
+
+    <button id="btn" onclick="doLogin()">Log In</button>
+    <div class="status" id="status"></div>
+
+    <p class="note">
+      Credentials are sent over HTTPS directly to SIT.<br>
+      Telegram never sees your password.
+    </p>
+  </div>
+
+  <script>
+    async function doLogin() {
+      const btn      = document.getElementById('btn');
+      const status   = document.getElementById('status');
+      const email    = document.getElementById('email').value.trim();
+      const password = document.getElementById('password').value;
+      if (!email || !password) {
+        status.className = 'status error';
+        status.textContent = 'Please enter your email and password.';
+        return;
+      }
+      btn.disabled = true;
+      btn.innerHTML = '<span class="spinner"></span>Logging in\u2026';
+      status.className = 'status';
+      status.textContent = '';
+      try {
+        const resp = await fetch(window.location.href, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ email, password })
+        });
+        const data = await resp.json();
+        if (data.ok) {
+          status.className = 'status success';
+          status.textContent = '\u2705 Logged in! Return to Telegram to use /check.';
+          btn.textContent = 'Done';
+        } else {
+          status.className = 'status error';
+          status.textContent = '\u274C ' + (data.error || 'Login failed.');
+          btn.disabled = false;
+          btn.textContent = 'Log In';
+        }
+      } catch (e) {
+        status.className = 'status error';
+        status.textContent = '\u274C Network error. Please try again.';
+        btn.disabled = false;
+        btn.textContent = 'Log In';
+      }
+    }
+    document.addEventListener('keydown', e => { if (e.key === 'Enter') doLogin(); });
+  </script>
+</body>
+</html>"""
+
+EXPIRED_HTML = """<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>Link Expired</title>
+  <style>
+    body { font-family: 'Segoe UI', sans-serif; background: #f0f2f5; min-height: 100vh;
+           display: flex; align-items: center; justify-content: center; padding: 24px; }
+    .card { background: white; border-radius: 12px; box-shadow: 0 2px 16px rgba(0,0,0,0.1);
+            padding: 32px; max-width: 380px; text-align: center; }
+    h1 { font-size: 1.2rem; color: #c0392b; margin-bottom: 12px; }
+    p  { color: #555; font-size: 0.9rem; line-height: 1.6; }
+  </style>
+</head>
+<body>
+  <div class="card">
+    <h1>Link Expired</h1>
+    <p>This login link has expired or has already been used.<br><br>
+       Send <strong>/login</strong> in Telegram to get a new one.</p>
+  </div>
+</body>
+</html>"""
+
+
+@app.route('/bot-login/<token>', methods=['GET'])
+def bot_login_get(token):
+    if not is_valid_token(token):
+        return EXPIRED_HTML, 400
+    return BOT_LOGIN_HTML
+
+
+@app.route('/bot-login/<token>', methods=['POST'])
+def bot_login_post(token):
+    tg_user_id = consume_login_token(token)
+    if not tg_user_id:
+        return jsonify({'error': 'Link expired or already used.'}), 400
+
+    data     = request.get_json() or {}
+    email    = data.get('email', '').strip()
+    password = data.get('password', '').strip()
+    if not email or not password:
+        return jsonify({'error': 'Email and password are required.'}), 400
+
+    try:
+        cookie_str = asyncio.run(login_and_get_cookie(email, password))
+        save_cookie(tg_user_id, cookie_str)
+        _notify_telegram(
+            tg_user_id,
+            "✅ <b>Logged in successfully!</b>\n\nUse /check to check room availability."
+        )
+        return jsonify({'ok': True})
+    except Exception as e:
+        err = str(e)
+        if 'LOGIN_FAILED' in err:
+            return jsonify({'error': 'Invalid email or password.'}), 401
+        return jsonify({'error': 'An unexpected error occurred. Please try again.'}), 500
 
 
 @app.route("/")
