@@ -42,6 +42,9 @@ class _CheckJob:
     context: Any
     cookie_str: str
     status_msg: Any
+    date: str
+    start: str
+    end: str
 
 _job_queue: asyncio.Queue = asyncio.Queue()
 _worker_busy: bool = False
@@ -209,28 +212,30 @@ async def _run_check(update: Update, context: ContextTypes.DEFAULT_TYPE, cookie_
                 pass
             return
         final_text = f"❌ Error: {str(e)[:200]}"
-    # Set _done, then yield so any in-flight create_task progress edits fire and
-    # see _done=True before we attempt the final edit.
+    # Set _done, then yield so any in-flight create_task progress edits see it
+    # and bail out before we try to touch the message.
     _done[0] = True
     await asyncio.sleep(0)
 
-    # Send final results, retrying once if Telegram rate-limits us.
-    for attempt in range(3):
+    # Send results as a brand-new message — completely avoids the per-message
+    # edit rate limit that was causing the progress bar to stay stuck.
+    chat_id = status_msg.chat_id if status_msg else update.effective_chat.id
+    try:
+        await context.bot.send_message(
+            chat_id=chat_id,
+            text=final_text,
+            parse_mode='HTML',
+            reply_markup=_RESULT_KEYBOARD,
+        )
+    except Exception as e:
+        logging.error("Failed to send results: %s", e)
+
+    # Delete the now-stale progress bar message.
+    if status_msg:
         try:
-            if status_msg:
-                await status_msg.edit_text(final_text, parse_mode='HTML', reply_markup=_RESULT_KEYBOARD)
-            else:
-                await update.effective_chat.send_message(final_text, parse_mode='HTML', reply_markup=_RESULT_KEYBOARD)
-            break
-        except RetryAfter as e:
-            await asyncio.sleep(e.retry_after + 1)
+            await status_msg.delete()
         except Exception:
-            # Non-rate-limit failure — fall back to a fresh message.
-            try:
-                await update.effective_chat.send_message(final_text, parse_mode='HTML', reply_markup=_RESULT_KEYBOARD)
-            except Exception:
-                pass
-            break
+            pass
 
 
 async def _queue_worker() -> None:
@@ -240,6 +245,9 @@ async def _queue_worker() -> None:
         job: _CheckJob = await _job_queue.get()
         _worker_busy = True
         try:
+            job.context.user_data['date'] = job.date
+            job.context.user_data['start'] = job.start
+            job.context.user_data['end'] = job.end
             await _run_check(job.update, job.context, job.cookie_str, job.status_msg)
         except Exception as exc:
             logging.exception("Queue worker unhandled error: %s", exc)
@@ -250,7 +258,17 @@ async def _queue_worker() -> None:
 
 async def _enqueue_check(update: Update, context: ContextTypes.DEFAULT_TYPE, cookie_str: str, status_msg: Any) -> None:
     """Add a check job to the queue. If others are ahead, tells the user their position."""
-    await _job_queue.put(_CheckJob(update, context, cookie_str, status_msg))
+    await _job_queue.put(
+        _CheckJob(
+            update=update,
+            context=context,
+            cookie_str=cookie_str,
+            status_msg=status_msg,
+            date=context.user_data['date'],
+            start=context.user_data['start'],
+            end=context.user_data['end'],
+        )
+    )
     if _worker_busy:
         pos = _job_queue.qsize()
         try:
