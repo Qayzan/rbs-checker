@@ -39,13 +39,14 @@ scrape_lock = asyncio.Lock()
 COOKIES_FILE = os.path.join(os.path.dirname(__file__), 'cookies.json')
 
 COOKIE_INSTRUCTIONS = (
-    "🍪 <b>Session cookie needed</b>\n\n"
-    "Your saved cookie has expired or hasn't been set yet.\n\n"
-    "<b>Option A — Bookmarklet (try first):</b>\n"
+    "🔐 <b>Session expired</b>\n\n"
+    "Use /login to log back in with your SIT credentials.\n\n"
+    "<b>Or paste a session cookie manually:</b>\n\n"
+    "<b>Option A — Bookmarklet:</b>\n"
     "1. Add the bookmarklet from the GitHub repo to your browser\n"
     "2. Log into RBS, then click the bookmarklet\n"
     "3. Paste the copied text here\n\n"
-    "<b>Option B — DevTools (always works):</b>\n"
+    "<b>Option B — DevTools:</b>\n"
     "1. Log into <a href='https://rbs.singaporetech.edu.sg'>RBS</a>\n"
     "2. Press <code>F12</code> → <b>Network</b> tab\n"
     "3. Press <code>F5</code> to reload\n"
@@ -119,13 +120,35 @@ def _format_results(data: dict) -> str:
     fully = data['fully']
     partial = data['partial']
     none_list = data['none']
+
     lines = [f"✅ <b>Fully Available ({len(fully)})</b>"]
-    lines += [f"• {r['name']}" for r in fully] or ["<i>None</i>"]
+    if fully:
+        for r in fully:
+            slots = r.get('slots', [])
+            slot_str = ', '.join(slots[:10]) + (f' +{len(slots)-10} more' if len(slots) > 10 else '')
+            lines.append(f"• {r['name']}" + (f"\n  ↳ <i>{slot_str}</i>" if slot_str else ''))
+    else:
+        lines.append("<i>None</i>")
+
     lines.append(f"\n🟡 <b>Partially Available ({len(partial)})</b>")
-    lines += [f"• {r['name']} — {r['avail']}/{r['total']} slots free" for r in partial] or ["<i>None</i>"]
+    if partial:
+        for r in partial:
+            free = [s['time'] for s in r.get('slots', []) if s['avail']]
+            lines.append(f"• {r['name']} — {r['avail']}/{r['total']} free")
+            if free:
+                lines.append(f"  ↳ <i>{', '.join(free)}</i>")
+    else:
+        lines.append("<i>None</i>")
+
     lines.append(f"\n❌ <b>Fully Booked ({len(none_list)})</b>")
     lines += [f"• {n}" for n in none_list] or ["<i>None</i>"]
     return "\n".join(lines)
+
+
+_RESULT_KEYBOARD = InlineKeyboardMarkup([[
+    InlineKeyboardButton("🔄 Check again", callback_data="recheck"),
+    InlineKeyboardButton("📅 New search", callback_data="newcheck"),
+]])
 
 
 async def _run_check(update: Update, context: ContextTypes.DEFAULT_TYPE, cookie_str: str) -> int:
@@ -193,9 +216,9 @@ async def _run_check(update: Update, context: ContextTypes.DEFAULT_TYPE, cookie_
 
     _done[0] = True
     if status_msg:
-        await status_msg.edit_text(final_text, parse_mode='HTML')
+        await status_msg.edit_text(final_text, parse_mode='HTML', reply_markup=_RESULT_KEYBOARD)
     else:
-        await update.message.reply_text(final_text, parse_mode='HTML')
+        await update.message.reply_text(final_text, parse_mode='HTML', reply_markup=_RESULT_KEYBOARD)
 
     return ConversationHandler.END
 
@@ -206,7 +229,7 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         "Commands:\n"
         "/login — Log in with your SIT credentials\n"
         "/check — Check room availability\n"
-        "/cookie — Manually update your session cookie\n\n"
+        "/logout — Clear your saved session\n\n"
         "Use /login to get started.",
         parse_mode='HTML'
     )
@@ -289,18 +312,6 @@ async def cookie_received(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     return await _run_check(update, context, cookie_str)
 
 
-async def cookie_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    await update.message.reply_text(COOKIE_INSTRUCTIONS, parse_mode='HTML')
-    return AWAITING_COOKIE
-
-
-async def cookie_only_received(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    cookie_str = update.message.text.strip()
-    _save_cookie(update.effective_user.id, cookie_str)
-    await update.message.reply_text("✅ Cookie saved! Use /check to check rooms.")
-    return ConversationHandler.END
-
-
 async def login_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     await update.message.reply_text(
         "🔐 <b>Login to RBS</b>\n\nEnter your SIT email address:",
@@ -345,6 +356,43 @@ async def password_received(update: Update, context: ContextTypes.DEFAULT_TYPE) 
     return ConversationHandler.END
 
 
+async def logout_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    _delete_cookie(update.effective_user.id)
+    context.user_data.clear()
+    await update.message.reply_text("✅ Logged out. Your session has been cleared.")
+
+
+async def recheck_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    query = update.callback_query
+    await query.answer()
+    user_id = update.effective_user.id
+    cookie_str = _get_cookie(user_id)
+    if not cookie_str:
+        await query.message.reply_text("❌ No session found. Please /login first.")
+        return
+    if scrape_lock.locked():
+        await query.answer("⏳ A check is already running.", show_alert=True)
+        return
+    date = context.user_data.get('date', '')
+    start = context.user_data.get('start', '')
+    end = context.user_data.get('end', '')
+    await query.edit_message_text(
+        f"🔍 Checking rooms for {date}, {start}–{end}…",
+        parse_mode='HTML'
+    )
+    await _run_check(update, context, cookie_str)
+
+
+async def newcheck_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    query = update.callback_query
+    await query.answer()
+    if scrape_lock.locked():
+        await query.message.reply_text("⏳ A check is already running. Please try again in a moment.")
+        return ConversationHandler.END
+    await query.message.reply_text("📅 Select a date:", reply_markup=_date_keyboard())
+    return CHOOSE_DATE
+
+
 async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     await update.message.reply_text("Cancelled.")
     return ConversationHandler.END
@@ -354,21 +402,16 @@ def main() -> None:
     application = Application.builder().token(BOT_TOKEN).build()
 
     check_conv = ConversationHandler(
-        entry_points=[CommandHandler('check', check_command)],
+        entry_points=[
+            CommandHandler('check', check_command),
+            CallbackQueryHandler(newcheck_callback, pattern='^newcheck$'),
+        ],
         states={
             CHOOSE_DATE: [CallbackQueryHandler(date_chosen, pattern='^date_')],
             AWAITING_CUSTOM_DATE: [MessageHandler(filters.TEXT & ~filters.COMMAND, custom_date_received)],
             CHOOSE_START: [CallbackQueryHandler(start_time_chosen, pattern='^time_')],
             CHOOSE_END: [CallbackQueryHandler(end_time_chosen, pattern='^time_')],
             AWAITING_COOKIE: [MessageHandler(filters.TEXT & ~filters.COMMAND, cookie_received)],
-        },
-        fallbacks=[CommandHandler('cancel', cancel)],
-    )
-
-    cookie_conv = ConversationHandler(
-        entry_points=[CommandHandler('cookie', cookie_command)],
-        states={
-            AWAITING_COOKIE: [MessageHandler(filters.TEXT & ~filters.COMMAND, cookie_only_received)],
         },
         fallbacks=[CommandHandler('cancel', cancel)],
     )
@@ -383,9 +426,10 @@ def main() -> None:
     )
 
     application.add_handler(CommandHandler('start', start_command))
+    application.add_handler(CommandHandler('logout', logout_command))
+    application.add_handler(CallbackQueryHandler(recheck_callback, pattern='^recheck$'))
     application.add_handler(login_conv)
     application.add_handler(check_conv)
-    application.add_handler(cookie_conv)
 
     print("Bot started. Press Ctrl+C to stop.")
     application.run_polling()

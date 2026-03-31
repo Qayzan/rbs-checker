@@ -107,12 +107,22 @@ HTML = """
       times.push(`${String(h).padStart(2,'0')}:00`);
       if (h < 22) times.push(`${String(h).padStart(2,'0')}:30`);
     }
-    ['start','end'].forEach(id => {
-      const sel = document.getElementById(id);
-      times.forEach(t => { const o = document.createElement('option'); o.value = t; o.text = t; sel.appendChild(o); });
-    });
-    document.getElementById('start').value = '07:00';
-    document.getElementById('end').value = '22:00';
+    const startSel = document.getElementById('start');
+    times.forEach(t => { const o = document.createElement('option'); o.value = t; o.text = t; startSel.appendChild(o); });
+    startSel.value = '07:00';
+
+    function populateEnd() {
+      const endSel   = document.getElementById('end');
+      const prev     = endSel.value;
+      const afterVal = startSel.value;
+      endSel.innerHTML = '';
+      times.filter(t => t > afterVal).forEach(t => {
+        const o = document.createElement('option'); o.value = t; o.text = t; endSel.appendChild(o);
+      });
+      endSel.value = (prev > afterVal) ? prev : endSel.options[endSel.options.length - 1].value;
+    }
+    startSel.addEventListener('change', populateEnd);
+    populateEnd();
 
     // Default date to today
     const today = new Date();
