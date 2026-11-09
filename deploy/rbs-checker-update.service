@@ -1,0 +1,9 @@
+[Unit]
+Description=Update the SIT RBS bot from GitHub
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/bin/bash /opt/rbs-checker/deploy/update.sh
+TimeoutStartSec=600

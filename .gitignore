@@ -19,7 +19,16 @@ Thumbs.db
 # Bot secrets and session data
 bot/.env
 bot/cookies.json
+bot/buildings.json
+bot/preferences.json
+bot/alerts.json
+bot/runtime.*.log
+bot/cloud-active
+deploy/*.tar.gz
 
 # Tooling
 .claude/
 .firecrawl/
+
+# Server-side browser download
+browsers/

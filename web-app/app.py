@@ -266,7 +266,7 @@ HTML = """
       } catch (_) {}
     }
 
-    function renderResults({ fully, partial, none }) {
+    function renderResults({ fully, partial, none, errors = [] }) {
       const results = document.getElementById('results');
       results.innerHTML = '';
 
@@ -286,6 +286,8 @@ HTML = """
 
       results.innerHTML += section('none', `\u274C Fully Booked \u2014 ${none.length} room(s)`,
         none.length ? none.map(n => `<div class="room-row"><div class="room-name">${esc(n)}</div></div>`).join('') : '<div class="empty">None.</div>');
+      if (errors.length) results.innerHTML += section('partial', `Could not check — ${errors.length} room(s)`,
+        errors.map(n => `<div class="room-row"><div class="room-name">${esc(n)}</div></div>`).join(''));
     }
 
     function section(cls, title, body) {

@@ -1,0 +1,33 @@
+[Unit]
+Description=SIT RBS Telegram Bot
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=rbsbot
+Group=rbsbot
+WorkingDirectory=/opt/rbs-checker
+EnvironmentFile=/etc/rbs-checker.env
+Environment=PYTHONUNBUFFERED=1
+Environment=PLAYWRIGHT_BROWSERS_PATH=/opt/rbs-checker/browsers
+Environment=RBS_DATA_DIR=/var/lib/rbs-checker
+Environment=RBS_MAX_PARALLEL_CHECKS=1
+Environment=RBS_SESSION_CAPACITY=2
+Environment=RBS_SESSION_IDLE_SECONDS=120
+Environment=RBS_BROWSER_IDLE_SECONDS=300
+ExecStart=/opt/rbs-checker/.venv/bin/python /opt/rbs-checker/bot/bot.py
+Restart=on-failure
+RestartSec=10
+KillSignal=SIGINT
+TimeoutStopSec=210
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+MemoryAccounting=true
+MemoryHigh=650M
+MemoryMax=800M
+MemorySwapMax=768M
+
+[Install]
+WantedBy=multi-user.target

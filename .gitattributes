@@ -1,0 +1,6 @@
+# Server scripts must keep Linux line endings even when committed from Windows.
+*.sh       text eol=lf
+*.service  text eol=lf
+*.timer    text eol=lf
+*.py       text eol=lf
+*.bat      text eol=crlf
