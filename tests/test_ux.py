@@ -198,13 +198,30 @@ class WarmUpTests(unittest.IsolatedAsyncioTestCase):
             b._save_cookie(7, 'c')
             ctx = SimpleNamespace(user_data={}, application=SimpleNamespace(
                 create_task=lambda coro, **kw: asyncio.create_task(coro)))
-            upd = SimpleNamespace(effective_user=SimpleNamespace(id=7),
+            upd = SimpleNamespace(effective_user=SimpleNamespace(id=7), effective_chat=SimpleNamespace(id=70),
                                   message=SimpleNamespace(reply_text=AsyncMock()))
             await b.check_command(upd, ctx)
             await b.check_command(upd, ctx)       # second tap while warming: no duplicate
             await asyncio.gather(*b._warmups.values())
         tmp.cleanup()
         warm.assert_awaited_once()
+
+    async def test_expired_session_is_reported_at_first_tap(self):
+        tmp = tempfile.TemporaryDirectory()
+        with patch.object(b, 'COOKIES_FILE', str(Path(tmp.name) / 'c.json')), \
+             patch.object(b, 'warm_up', AsyncMock(return_value=False)):
+            b._save_cookie(8, 'old')
+            sent = AsyncMock()
+            ctx = SimpleNamespace(user_data={}, bot=SimpleNamespace(send_message=sent),
+                                  application=SimpleNamespace(create_task=lambda coro, **kw: asyncio.create_task(coro)))
+            upd = SimpleNamespace(effective_user=SimpleNamespace(id=8), effective_chat=SimpleNamespace(id=80),
+                                  message=SimpleNamespace(reply_text=AsyncMock()))
+            await b.check_command(upd, ctx)
+            await asyncio.gather(*b._warmups.values())
+            self.assertIsNone(b._get_cookie(8))
+            self.assertEqual(sent.call_args.args[0], 80)
+            self.assertIn('/login', sent.call_args.args[1])
+        tmp.cleanup()
 
 
 class LayoutTests(unittest.IsolatedAsyncioTestCase):

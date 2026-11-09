@@ -80,6 +80,12 @@ MAIN_KEYBOARD = ReplyKeyboardMarkup(
     [[KeyboardButton(CHECK_BUTTON_TEXT)], [KeyboardButton('🔁 Repeat search')]], resize_keyboard=True, is_persistent=True
 )
 
+EXPIRED_EARLY = (
+    "🔐 <b>Heads up: SIT has logged you out</b> (this happens after a while; it's normal).\n\n"
+    "Send /login to sign in again. You can keep picking; I'll remember your search "
+    "and offer to run it right after you log in."
+)
+
 NOT_LOGGED_IN = (
     "🔐 <b>You're not logged in</b> (or your SIT session expired).\n\n"
     "Send /login to sign in with your SIT account. I'll keep your search, "
@@ -704,7 +710,7 @@ async def _perform_check(update: Update, context: ContextTypes.DEFAULT_TYPE, sta
 async def check_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     context.user_data.pop('duration', None)
     context.user_data.pop('limit', None)
-    _start_warmup(context, update.effective_user.id)
+    _start_warmup(context, update.effective_user.id, update.effective_chat.id)
     await update.message.reply_text("📅 <b>Which day?</b>", parse_mode='HTML',
                                     reply_markup=_date_keyboard())
     return CHOOSE_DATE
@@ -715,7 +721,7 @@ async def newcheck_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) 
     context.user_data.pop('limit', None)
     query = update.callback_query
     await query.answer()
-    _start_warmup(context, update.effective_user.id)
+    _start_warmup(context, update.effective_user.id, update.effective_chat.id)
     await query.message.reply_text("📅 <b>Which day?</b>", parse_mode='HTML',
                                    reply_markup=_date_keyboard())
     return CHOOSE_DATE
@@ -1502,8 +1508,11 @@ async def _shared_lookup(q, cookie, log_fn, on_room=None, fresh=False, preferred
             await asyncio.gather(record['task'], return_exceptions=True)
 
 
-def _start_warmup(context, user_id: int) -> None:
-    """Open the browser and this person's RBS page while they pick day/building/time."""
+def _start_warmup(context, user_id: int, chat_id: int | None = None) -> None:
+    """Open the browser and this person's RBS page while they pick day/building/time.
+
+    If SIT has already logged them out, say so straight away instead of letting
+    them pick a day, building and time first."""
     cookie = _get_cookie(user_id)
     if not cookie:
         return
@@ -1514,6 +1523,10 @@ def _start_warmup(context, user_id: int) -> None:
         try:
             if not await asyncio.wait_for(warm_up(cookie), timeout=60):
                 logging.info('Warm-up found an expired session for a user')
+                if _get_cookie(user_id) == cookie:
+                    _delete_cookie(user_id)
+                    if chat_id is not None:
+                        await context.bot.send_message(chat_id, EXPIRED_EARLY, parse_mode='HTML')
         except asyncio.CancelledError:
             raise
         except Exception as exc:
