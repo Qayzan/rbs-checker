@@ -1,6 +1,6 @@
 # SIT RBS Room Checker
 
-Check available Discussion Rooms on SIT's Resource Booking System — no installation required.
+Check available discussion rooms on the Singapore Institute of Technology (SIT) Resource Booking System (RBS). No installation required.
 
 ## Download & Run (Windows)
 
@@ -13,7 +13,7 @@ Check available Discussion Rooms on SIT's Resource Booking System — no install
 
 ## Telegram Bot
 
-An alternative interface via Telegram — no install needed.
+An alternative interface via Telegram. No install needed.
 
 ### Setup (one-time)
 
@@ -23,8 +23,8 @@ An alternative interface via Telegram — no install needed.
 
 ### Usage
 
-1. Send `/login` and enter your SIT credentials — the bot deletes your password message and only keeps the session
-2. Tap **🔍 Check rooms** (or send `/check`), then pick a day, a building, and a time window — or a quick option like *Next 2h* / *Whole day*
+1. Send `/login` and enter your SIT credentials. The bot deletes your password message and only keeps the session
+2. Tap **🔍 Check rooms** (or send `/check`), then pick a day, a building, and a time window, or a quick option like *Next 2h* / *Whole day*
 3. Rooms appear in the chat as they're found; use the **≥1h / ≥2h** buttons to hide short gaps
 
 Picking one building is ~3× faster than *Any building* (RBS answers one room at a time, ~1.4 s each).
@@ -98,7 +98,7 @@ python web-app/app.py
 web-app/build.bat
 ```
 
-Output will be in `web-app/dist\rbs-checker\` — zip the folder and share it.
+Output will be in `web-app/dist\rbs-checker\`. Zip the folder and share it.
 
 ---
 
